@@ -23,13 +23,19 @@ func setupTestDB(t *testing.T) (*SQLiteStorage, func()) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	store, err := New(dbPath)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		if removeErr := os.RemoveAll(tmpDir); removeErr != nil {
+			t.Logf("failed to remove temp dir after setup failure: %v", removeErr)
+		}
 		t.Fatalf("failed to create storage: %v", err)
 	}
 
 	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		if closeErr := store.Close(); closeErr != nil {
+			t.Logf("failed to close storage: %v", closeErr)
+		}
+		if removeErr := os.RemoveAll(tmpDir); removeErr != nil {
+			t.Logf("failed to remove temp dir: %v", removeErr)
+		}
 	}
 
 	return store, cleanup
