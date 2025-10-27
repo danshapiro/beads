@@ -479,10 +479,16 @@ func (s *SQLiteStorage) CreateIssue(ctx context.Context, issue *types.Issue, act
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Set timestamps
-	now := time.Now()
-	issue.CreatedAt = now
-	issue.UpdatedAt = now
+	// Set timestamps if not already provided
+	if issue.CreatedAt.IsZero() || issue.UpdatedAt.IsZero() {
+		now := time.Now()
+		if issue.CreatedAt.IsZero() {
+			issue.CreatedAt = now
+		}
+		if issue.UpdatedAt.IsZero() {
+			issue.UpdatedAt = now
+		}
+	}
 
 	// Acquire a dedicated connection for the transaction.
 	// This is necessary because we need to execute raw SQL ("BEGIN IMMEDIATE", "COMMIT")
@@ -614,14 +620,18 @@ func (s *SQLiteStorage) CreateIssue(ctx context.Context, issue *types.Issue, act
 
 // validateBatchIssues validates all issues in a batch and sets timestamps
 func validateBatchIssues(issues []*types.Issue) error {
-	now := time.Now()
+	defaultTime := time.Now()
 	for i, issue := range issues {
 		if issue == nil {
 			return fmt.Errorf("issue %d is nil", i)
 		}
 
-		issue.CreatedAt = now
-		issue.UpdatedAt = now
+		if issue.CreatedAt.IsZero() {
+			issue.CreatedAt = defaultTime
+		}
+		if issue.UpdatedAt.IsZero() {
+			issue.UpdatedAt = defaultTime
+		}
 
 		if err := issue.Validate(); err != nil {
 			return fmt.Errorf("validation failed for issue %d: %w", i, err)
@@ -793,16 +803,17 @@ func bulkMarkDirty(ctx context.Context, conn *sql.Conn, issues []*types.Issue) e
 //   - This reflects that they were created as a single atomic operation
 //
 // Usage:
-//   // Bulk import from external source
-//   issues := []*types.Issue{...}
-//   if err := store.CreateIssues(ctx, issues, "import"); err != nil {
-//       return err
-//   }
 //
-//   // After importing with explicit IDs, sync counters to prevent collisions
-//   if err := store.SyncAllCounters(ctx); err != nil {
-//       return err
-//   }
+//	// Bulk import from external source
+//	issues := []*types.Issue{...}
+//	if err := store.CreateIssues(ctx, issues, "import"); err != nil {
+//	    return err
+//	}
+//
+//	// After importing with explicit IDs, sync counters to prevent collisions
+//	if err := store.SyncAllCounters(ctx); err != nil {
+//	    return err
+//	}
 //
 // Performance:
 //   - 100 issues: ~30ms (vs ~900ms with CreateIssue loop)
@@ -1002,11 +1013,11 @@ func validateEstimatedMinutes(value interface{}) error {
 
 // fieldValidators maps field names to their validation functions
 var fieldValidators = map[string]func(interface{}) error{
-	"priority":           validatePriority,
-	"status":             validateStatus,
-	"issue_type":         validateIssueType,
-	"title":              validateTitle,
-	"estimated_minutes":  validateEstimatedMinutes,
+	"priority":          validatePriority,
+	"status":            validateStatus,
+	"issue_type":        validateIssueType,
+	"title":             validateTitle,
+	"estimated_minutes": validateEstimatedMinutes,
 }
 
 // validateFieldUpdate validates a field update value

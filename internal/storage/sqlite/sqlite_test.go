@@ -23,13 +23,19 @@ func setupTestDB(t *testing.T) (*SQLiteStorage, func()) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	store, err := New(dbPath)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		if removeErr := os.RemoveAll(tmpDir); removeErr != nil {
+			t.Logf("failed to remove temp dir after setup failure: %v", removeErr)
+		}
 		t.Fatalf("failed to create storage: %v", err)
 	}
 
 	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		if closeErr := store.Close(); closeErr != nil {
+			t.Logf("failed to close storage: %v", closeErr)
+		}
+		if removeErr := os.RemoveAll(tmpDir); removeErr != nil {
+			t.Logf("failed to remove temp dir: %v", removeErr)
+		}
 	}
 
 	return store, cleanup
@@ -63,6 +69,49 @@ func TestCreateIssue(t *testing.T) {
 
 	if !issue.UpdatedAt.After(time.Time{}) {
 		t.Error("UpdatedAt should be set")
+	}
+}
+
+func TestCreateIssuePreservesTimestamps(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	createdAt := time.Date(2020, time.January, 2, 15, 4, 5, 0, time.UTC)
+	updatedAt := createdAt.Add(2 * time.Hour)
+
+	issue := &types.Issue{
+		Title:     "Imported issue",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}
+
+	if err := store.CreateIssue(ctx, issue, "import"); err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	if !issue.CreatedAt.Equal(createdAt) {
+		t.Fatalf("CreateIssue overwrote CreatedAt: got %s want %s", issue.CreatedAt, createdAt)
+	}
+	if !issue.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("CreateIssue overwrote UpdatedAt: got %s want %s", issue.UpdatedAt, updatedAt)
+	}
+
+	stored, err := store.GetIssue(ctx, issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue failed: %v", err)
+	}
+	if stored == nil {
+		t.Fatal("GetIssue returned nil")
+	}
+	if !stored.CreatedAt.Equal(createdAt) {
+		t.Fatalf("database CreatedAt mismatch: got %s want %s", stored.CreatedAt, createdAt)
+	}
+	if !stored.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("database UpdatedAt mismatch: got %s want %s", stored.UpdatedAt, updatedAt)
 	}
 }
 
@@ -199,10 +248,10 @@ func TestCreateIssues(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name       string
-		issues     []*types.Issue
-		wantErr    bool
-		checkFunc  func(t *testing.T, issues []*types.Issue)
+		name      string
+		issues    []*types.Issue
+		wantErr   bool
+		checkFunc func(t *testing.T, issues []*types.Issue)
 	}{
 		{
 			name:    "empty batch",
@@ -489,7 +538,7 @@ func TestCreateIssues(t *testing.T) {
 						continue
 					}
 					// Allow pre-set IDs (custom-1, existing-id, duplicate-id, etc.)
-					hasCustomID := issue.ID != "" && (issue.ID == "custom-1" || issue.ID == "custom-2" || 
+					hasCustomID := issue.ID != "" && (issue.ID == "custom-1" || issue.ID == "custom-2" ||
 						issue.ID == "duplicate-id" || issue.ID == "existing-id")
 					if !hasCustomID && issue.ID != "" {
 						t.Errorf("issue %d: ID should not be auto-generated on error, got %s", i, issue.ID)
@@ -501,6 +550,71 @@ func TestCreateIssues(t *testing.T) {
 				tt.checkFunc(t, tt.issues)
 			}
 		})
+	}
+}
+
+func TestCreateIssuesPreservesTimestamps(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	firstCreated := time.Date(2021, time.March, 4, 10, 30, 0, 0, time.UTC)
+	firstUpdated := firstCreated.Add(30 * time.Minute)
+	secondCreated := time.Date(2022, time.June, 6, 8, 15, 0, 0, time.UTC)
+	secondUpdated := secondCreated.Add(45 * time.Minute)
+
+	issues := []*types.Issue{
+		{
+			Title:     "First imported",
+			Status:    types.StatusOpen,
+			Priority:  2,
+			IssueType: types.TypeTask,
+			CreatedAt: firstCreated,
+			UpdatedAt: firstUpdated,
+		},
+		{
+			Title:     "Second imported",
+			Status:    types.StatusInProgress,
+			Priority:  1,
+			IssueType: types.TypeFeature,
+			CreatedAt: secondCreated,
+			UpdatedAt: secondUpdated,
+		},
+	}
+
+	if err := store.CreateIssues(ctx, issues, "import"); err != nil {
+		t.Fatalf("CreateIssues failed: %v", err)
+	}
+
+	expected := []struct {
+		created time.Time
+		updated time.Time
+	}{
+		{created: firstCreated, updated: firstUpdated},
+		{created: secondCreated, updated: secondUpdated},
+	}
+
+	for i, issue := range issues {
+		if !issue.CreatedAt.Equal(expected[i].created) {
+			t.Fatalf("issue %d CreatedAt overwritten: got %s want %s", i, issue.CreatedAt, expected[i].created)
+		}
+		if !issue.UpdatedAt.Equal(expected[i].updated) {
+			t.Fatalf("issue %d UpdatedAt overwritten: got %s want %s", i, issue.UpdatedAt, expected[i].updated)
+		}
+
+		stored, err := store.GetIssue(ctx, issue.ID)
+		if err != nil {
+			t.Fatalf("GetIssue failed for issue %d: %v", i, err)
+		}
+		if stored == nil {
+			t.Fatalf("GetIssue returned nil for issue %d", i)
+		}
+		if !stored.CreatedAt.Equal(expected[i].created) {
+			t.Fatalf("database CreatedAt mismatch for issue %d: got %s want %s", i, stored.CreatedAt, expected[i].created)
+		}
+		if !stored.UpdatedAt.Equal(expected[i].updated) {
+			t.Fatalf("database UpdatedAt mismatch for issue %d: got %s want %s", i, stored.UpdatedAt, expected[i].updated)
+		}
 	}
 }
 
